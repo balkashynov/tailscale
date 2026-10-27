@@ -17,9 +17,6 @@ import (
 	"tailscale.com/util/clientmetric"
 )
 
-// v4BroadcastAddr is 255.255.255.255, the limited broadcast address.
-var v4BroadcastAddr = netip.AddrFrom4([4]byte{255, 255, 255, 255})
-
 // viaAdditionsEnv is the name of an environment variable that can be set to
 // override the 4via6 host-scoped address restrictions. Only use this if you are
 // certain that there is not a better solution (e.g. perhaps tailscale serve,
@@ -118,17 +115,5 @@ func viaTargetAllowed(ip netip.Addr) bool {
 			return true
 		}
 	}
-	if ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip == v4BroadcastAddr {
-		return false
-	}
-	if tsaddr.IsTailscaleIP(ip) {
-		// A CGNAT-range target may route to tailscale0 or to a site LAN
-		// depending on the tailnet and OS (see shouldUseOneCGNATRoute);
-		// it's hard to detect when forwarding would be OK, so deny always
-		return false
-	}
-	if ip.IsLinkLocalUnicast() {
-		return false
-	}
-	return true
+	return !tsaddr.IsDisallowedForRouting(ip)
 }

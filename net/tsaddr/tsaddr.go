@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"go4.org/netipx"
+	"tailscale.com/net/ipset"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/types/views"
 )
@@ -340,4 +341,77 @@ func FirstTailscaleAddrs(addrs iter.Seq2[int, netip.Prefix]) (a4, a6 netip.Addr)
 		}
 	}
 	return a4, a6
+}
+
+// v4BroadcastAddr is 255.255.255.255, the limited broadcast address.
+var v4BroadcastAddr = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+
+// isCloudMetadata returns true for IP addresses (v4 or v6) that are known to
+// potentially contain cloud metadata. Most cloud providers document single
+// addresses (/128) but sometimes they have multiple addresses, so all ULA IPv6
+// addresses are recorded as their entire ULA prefix (/48).
+var isCloudMetadata = sync.OnceValue(func() func(netip.Addr) bool {
+	prefixes := []netip.Prefix{
+		netip.MustParsePrefix("169.254.169.254/32"),  // standard IPv4 address
+		netip.MustParsePrefix("fe80::a9fe:a9fe/128"), // commonly used link local IPv6 address
+
+		// AWS
+		// Standard IPv4 address
+		netip.MustParsePrefix("fd00:ec2::/48"),
+
+		// GCP
+		// Standard IPv4 address
+		netip.MustParsePrefix("fd20:ce::/48"),
+
+		// Scaleway
+		netip.MustParsePrefix("169.254.42.42/32"),
+		netip.MustParsePrefix("fd00:42::42/48"),
+
+		// Akamai/Linode
+		// Standard IPv4 address
+		netip.MustParsePrefix("fd00:a9fe:a9fe::/48"),
+		// Common link local IPv6 address
+
+		// OCI (Oracle)
+		// Standard IPv4 address
+		netip.MustParsePrefix("fd00:c1::/48"),
+
+		// Azure
+		// Standard IPv4 address
+		netip.MustParsePrefix("168.63.129.16/32"), // also: platform services
+		// No IPv6 address
+
+		// Hetzner
+		// Standard IPv4 address
+		// Common link local IPv6 address
+
+		// Vultr, DigitalOcean
+		// Standard IPv4 address
+		// No IPv6 address
+
+		// Alibaba
+		netip.MustParsePrefix("100.100.100.200/32"),
+	}
+
+	return ipset.NewContainsIPFunc(views.SliceOf(prefixes))
+})
+
+// IsDisallowedForRouting reports whether addr is an IP address in an IP range
+// that should not be allowed for various features that offer routing not
+// protected by [tailscale.com/wgengine/filter.Filter] pre(): 4via6, conn25.
+func IsDisallowedForRouting(addr netip.Addr) bool {
+	if addr.IsLoopback() || addr.IsMulticast() || addr.IsUnspecified() ||
+		addr == v4BroadcastAddr || addr.IsLinkLocalUnicast() {
+		return true
+	}
+	if IsTailscaleIP(addr) {
+		// A CGNAT-range target may route to tailscale0 or to a site LAN
+		// depending on the tailnet and OS (see shouldUseOneCGNATRoute);
+		// it's hard to detect when forwarding would be OK, so deny always
+		return true
+	}
+	if isCloudMetadata()(addr) {
+		return true
+	}
+	return false
 }
